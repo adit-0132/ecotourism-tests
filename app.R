@@ -191,7 +191,7 @@ app_theme <- bs_theme(
     .app-title {
       font-family: 'Playfair Display', serif;
       font-size: 1.1rem;
-      color: #C8D9A0;
+      color: #4a6608ff;
       line-height: 1.2;
     }
     .app-subtitle {
