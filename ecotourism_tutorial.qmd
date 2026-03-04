@@ -1,0 +1,301 @@
+---
+title: "Ecotourism Tutorial"
+subtitle: "Joining occurrence, weather, and tourism data"
+author: "Aditya Bansal"
+quarto-required: ">=1.8.0"
+format:
+    unilur-html:
+        output-file: ecotourism_tutorial.html
+        embed-resources: true
+    unilur-html+solution:
+        output-file: ecotourism_tutorialsol.html
+        embed-resources: true
+        show-solution: true
+---
+
+```{r include=FALSE}
+#| echo: false
+library(tidyverse)
+library(kableExtra)
+library(ecotourism)
+library(conflicted)
+
+# Load datasets explicitly into the global environment
+data(manta_rays,        package = "ecotourism")
+data(weather,           package = "ecotourism")
+data(tourism_quarterly, package = "ecotourism")
+data(tourism_region,    package = "ecotourism")
+
+knitr::opts_chunk$set(
+  fig.width = 6,
+  fig.height = 4,
+  fig.align = "center",
+  out.width = "100%",
+  fig.retina = 4,
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache = FALSE,
+  dev.args = list(pointsize = 11)
+)
+
+options(
+  digits = 2,
+  width = 80,
+  ggplot2.continuous.colour = "viridis",
+  ggplot2.continuous.fill = "viridis",
+  ggplot2.discrete.colour = c("#D55E00", "#0072B2", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#F0E442"),
+  ggplot2.discrete.fill = c("#D55E00", "#0072B2", "#009E73", "#CC79A7", "#E69F00", "#56B4E9", "#F0E442")
+)
+
+theme_set(theme_bw(base_size = 14) +
+  theme(
+    aspect.ratio = 1,
+    plot.background = element_rect(fill = "transparent", colour = NA),
+    plot.title.position = "plot",
+    plot.title = element_text(size = 10),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    legend.background = element_rect(fill = "transparent", colour = NA),
+    legend.key = element_rect(fill = "transparent", colour = NA)
+  )
+)
+
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+```
+
+## 🎯 Objectives
+
+Practice joining relational datasets across occurrence, weather, and tourism tables, and interpret ecological patterns from the combined data.
+
+## 🔧 Preparation
+
+- Install the `ecotourism` package from GitHub if you haven't already:
+  ```r
+  # install.packages("pak")
+  pak::pak("vahdatjavad/ecotourism")
+  ```
+- Open your RStudio Project for this unit. Create a new `.qmd` document for today's work.
+- Load the following libraries and datasets:
+  ```r
+  library(ecotourism)
+  library(tidyverse)
+  data(manta_rays,        package = "ecotourism")
+  data(weather,           package = "ecotourism")
+  data(tourism_quarterly, package = "ecotourism")
+  data(tourism_region,    package = "ecotourism")
+  ```
+
+## 📥 Exercises
+
+We will explore **Manta Ray** sightings in **Queensland** during **March**, the end of the wet season, when warm water temperatures draw manta rays to reef cleaning stations along the Great Barrier Reef.
+
+The `ecotourism` package provides four linked datasets for this analysis:
+
+```{r}
+#| echo: false
+desc <- tibble(
+  Dataset = c(
+    "manta_rays",
+    "weather",
+    "tourism_quarterly",
+    "tourism_region"
+  ),
+  Description = c(
+    "Manta ray occurrence records from the Atlas of Living Australia (2014-2024)",
+    "Daily weather observations for the top weather stations near each organism",
+    "Quarterly domestic visitor counts for Australian tourism regions",
+    "Australian tourism region names with centroid latitude and longitude"
+  )
+)
+kbl(desc, table.attr = 'data-quarto-disable-processing="true"') |>
+  kable_styling(full_width = FALSE) |>
+  column_spec(1, width = "3.5cm", border_right = TRUE, monospace = TRUE) |>
+  column_spec(2, width = "10cm")
+```
+
+The key variables used for joining are:
+
+```{r}
+#| echo: false
+vars <- tibble(
+  Variable = c("ws_id", "date", "year", "quarter", "month",
+               "obs_lat", "obs_lon", "obs_state"),
+  Dataset = c(
+    "manta_rays, weather, tourism_quarterly, tourism_region",
+    "manta_rays, weather",
+    "manta_rays, tourism_quarterly",
+    "tourism_quarterly",
+    "manta_rays",
+    "manta_rays",
+    "manta_rays",
+    "manta_rays"
+  ),
+  Description = c(
+    "Weather station ID, the shared key linking all four tables",
+    "Observation or measurement date (YYYY-MM-DD)",
+    "Year of observation",
+    "Quarter of the year (1 = Jan-Mar, 2 = Apr-Jun, ...)",
+    "Month of observation (integer, 1-12)",
+    "Latitude of the sighting",
+    "Longitude of the sighting",
+    "Australian state of the sighting"
+  )
+)
+kbl(vars, table.attr = 'data-quarto-disable-processing="true"') |>
+  kable_styling(full_width = FALSE) |>
+  column_spec(1, width = "3cm", border_right = TRUE, monospace = TRUE) |>
+  column_spec(2, width = "5cm") |>
+  column_spec(3, width = "8cm")
+```
+
+---
+
+### Exercise 1
+
+Filter `manta_rays` to sightings recorded in **March** in **Queensland**. Join this with the Q1 tourism data from `tourism_quarterly`. How many sightings have a matching tourism record? What proportion are missing, and what might explain the gaps?
+
+<!--
+```{r}
+# Starter code
+manta_march <- manta_rays |>
+  filter(month == 3, obs_state == "Queensland")
+
+manta_tourism <- manta_march |>
+  left_join(
+    tourism_quarterly |> filter(quarter == 1),
+    by = c("ws_id", "year")
+  )
+```
+-->
+
+::: unilur-solution
+```{r}
+manta_march <- manta_rays |>
+  filter(month == 3, obs_state == "Queensland")
+
+manta_tourism <- manta_march |>
+  left_join(
+    tourism_quarterly |> filter(quarter == 1),
+    by = c("ws_id", "year")
+  )
+
+manta_tourism |>
+  summarise(
+    total         = n(),
+    missing_trips = sum(is.na(trips)),
+    pct_missing   = round(mean(is.na(trips)) * 100, 1)
+  )
+```
+
+Gaps occur when a sighting's nearest weather station (`ws_id`) does not appear in `tourism_quarterly` — not every station has a corresponding tourism region. A `left_join` retains all occurrence rows, with `NA` where no tourism record matched.
+:::
+
+---
+
+### Exercise 2
+
+Extend your joined dataset from Exercise 1 by bringing in the `weather` data. Join daily weather observations to your occurrence and tourism records. With all three tables now connected, does the number of sightings appear to vary with both weather conditions and tourism activity? Summarise and visualise what you find.
+
+<!--
+```{r}
+# Starter code
+manta_full <- manta_tourism |>
+  left_join(
+    weather |> select(ws_id, date, temp, prcp),
+    by = c("ws_id", "date")
+  )
+```
+-->
+
+::: unilur-solution
+```{r}
+manta_full <- manta_tourism |>
+  left_join(
+    weather |> select(ws_id, date, temp, prcp),
+    by = c("ws_id", "date")
+  )
+
+manta_full |>
+  filter( !is.na(prcp)) |>
+  mutate(rainy = if_else(prcp > 5, "Rainy", "Dry")) |>
+  group_by(rainy) |>
+  summarise(
+    n_sightings = n(),
+    mean_trips  = mean(trips, na.rm = TRUE)
+  )
+
+manta_full |>
+  filter(!is.na(prcp)) |>
+  group_by(date, prcp, trips) |>
+  summarise(sightings = n(), .groups = "drop") |>
+  ggplot(aes(x = prcp, y = sightings)) +
+  geom_point(alpha = 0.5, colour = "#0072B2",size=3) +
+  labs(
+    x     = "Daily precipitation (mm)",
+    y     = "Manta ray sightings",
+    title = "Sightings vs rainfall, March Queensland"
+  )
+```
+
+With all three tables joined, sighting frequency is shaped by both weather and tourism. Rainy days tend to suppress sightings, while higher tourism volume coincides with more recorded sightings, likely because more observers are in the water.
+:::
+
+---
+
+### Exercise 3
+
+Using the fully joined dataset from Exercise 2, compute the total March manta ray sightings and total tourist trips for Queensland per year. Is there a visible relationship between annual tourism volume and annual sighting frequency? Compute the correlation and discuss whether the relationship is causal, keeping in mind the role weather plays in driving both variables.
+
+<!--
+```{r}
+# Starter code
+annual <- manta_full |>
+  filter(!is.na(trips)) |>
+  group_by(year) |>
+  summarise(
+    sightings = n(),
+    trips     = sum(trips, na.rm = FALSE)
+  )
+```
+-->
+
+::: unilur-solution
+```{r}
+annual <- manta_full |>
+  filter(!is.na(trips) | !is.na(prcp)) |>
+  group_by(year) |>
+  summarise(
+    sightings = n(),
+    trips     = sum(trips, na.rm = TRUE)
+  )
+
+cor(annual$sightings, annual$trips, use = "complete.obs")
+
+annual |>
+  pivot_longer(c(sightings, trips), names_to = "series", values_to = "value") |>
+  ggplot(aes(x = year, y = value, colour = series)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 2) +
+  facet_wrap(~series, scales = "free_y", ncol = 1) +
+  labs(
+    title = "Annual March sightings vs Q1 tourist trips (Queensland)",
+    x     = NULL,
+    y     = NULL
+  ) +
+  theme(legend.position = "none")
+```
+
+A positive correlation between sightings and trips is likely **not directly causal** in either direction. More tourists produce more observers and therefore more recorded sightings, inflating the occurrence count. But manta ray presence does not cause tourism. Both variables are more plausibly driven by a common factor: favourable weather years attract more tourists and also provide better marine conditions for sightings.
+:::
+
+## 👌 Finishing up
+
+Make sure you say thanks and good-bye to your tutor. Render both versions of your document with:
+
+```bash
+quarto render ecotourism_tutorial.qmd --to unilur-html
+quarto render ecotourism_tutorial.qmd --to unilur-html+solution
+```
+
+Think about: how would your answers to Exercise 1 change if you used `inner_join` instead of `left_join`? Try it and see.
