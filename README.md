@@ -17,7 +17,7 @@ The app helps users discover the **best locations and times to spot wildlife acr
 install.packages(c("shiny", "bslib", "leaflet", "dplyr", "ggplot2", "lubridate"))
 
 # Install the ecotourism package
-pak::pak("vahdatjavad/ecotourism")
+install.packages("ecotourism")
 ```
 
 Then run the app:
