@@ -42,16 +42,17 @@
 #' # Default: weighted scoring
 #' predict_best_sighting_times(gouldian_finch, weather, temp_range = c(18, 30))
 #'
-#' # Poisson GLM on glowworms (good weather coverage)
-#' predict_best_sighting_times(glowworms, weather, method = "glm")
-
+#' # Poisson GLM on gouldian finch (sufficient weather coverage)
+#' predict_best_sighting_times(gouldian_finch, weather,
+#'                             temp_range = c(18, 30),
+#'                             method = "glm")
+#'
 predict_best_sighting_times <- function(occurrence,
                                         weather,
                                         temp_range = c(15, 35),
                                         method     = "score",
                                         top_n      = 5) {
-
-  # Organism name cleaning from occurence
+  # Organism name cleaning from occurrence
   raw_name      <- deparse(substitute(occurrence))
   organism_name <- paste(
     toupper(substring(gsub("_", " ", raw_name), 1, 1)),
@@ -207,7 +208,7 @@ predict_best_sighting_times <- function(occurrence,
     best_days    <- head(seasonal_glm, top_n)
     rownames(best_days) <- NULL
 
-    # Hourly: average predicted score per hour
+    # Hourly: sum predicted scores per hour (frequency-weighted)
     hourly_glm <- aggregate(
       list(predicted   = count_data$predicted * count_data$n_sightings,
            n_sightings = count_data$n_sightings),
