@@ -1,5 +1,8 @@
 # Wildlife Spotter — Shiny App
 
+🔗 **Live App:** https://adit018.shinyapps.io/ecotourism-tests/
+
+
 An interactive Shiny app for exploring Australian wildlife sightings, built as part of the **GSoC 2026 selection test** for the `ecotourism` R package project.
 
 ---
