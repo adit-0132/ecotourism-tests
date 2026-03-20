@@ -1,0 +1,321 @@
+---
+title: "Predicting the Best Times to Spot Wildlife"
+subtitle: "Hard Test : ecotourism GSoC 2026"
+author: "Aditya Bansal"
+date: today
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    embed-resources: true
+    code-fold: true
+    code-summary: "Show code"
+execute:
+  echo: true
+  message: false
+  warning: false
+  cache: false
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ecotourism)
+library(kableExtra)
+library(conflicted)
+
+data(manta_rays,        package = "ecotourism")
+data(gouldian_finch,    package = "ecotourism")
+data(glowworms,         package = "ecotourism")
+data(orchids,           package = "ecotourism")
+data(weather,           package = "ecotourism")
+
+source("predict_best_sighting_times.R")
+
+knitr::opts_chunk$set(
+  fig.width  = 7,
+  fig.height = 4,
+  fig.align  = "center",
+  out.width  = "100%",
+  fig.retina = 4
+)
+
+options(digits = 2, width = 80)
+
+theme_set(theme_bw(base_size = 13) +
+  theme(
+    plot.background  = element_rect(fill = "transparent", colour = NA),
+    panel.background = element_rect(fill = "transparent", colour = NA),
+    plot.title       = element_text(size = 14, face = "bold"),
+    plot.title.position = "plot"
+  )
+)
+
+conflicts_prefer(dplyr::filter)
+conflicts_prefer(dplyr::select)
+```
+
+## The task
+
+Writing a function to predict the best times to spot wildlife required settling one question first: what does "predict" mean when there are no future weather forecasts in the package? The data available is ten years of occurrence records with timestamps, geographic coordinates, and matched weather observations. The approach taken was to find the combinations of month, weekday, and hour that have historically been associated with the most sightings, weighted by how favourable the weather conditions were on those occasions. The prediction is then: if similar conditions recur, these are the periods when you are most likely to see the organism.
+
+Before writing any code, the data was examined to understand what was actually available and where the gaps were.
+
+---
+
+## Data exploration
+
+### What the datasets contain
+
+The `ecotourism` package provides four occurrence datasets and one weather dataset. Each occurrence record has a `ws_id` column identifying the nearest weather station. Joining occurrence to weather on `ws_id` and `date` attaches the weather conditions to each sighting.
+
+```{r schema}
+tibble::tibble(
+  Dataset   = c("manta_rays", "gouldian_finch", "glowworms",
+                "orchids", "weather"),
+  Rows      = c(nrow(manta_rays), nrow(gouldian_finch), nrow(glowworms),
+                nrow(orchids), nrow(weather)),
+  Key_cols  = c(
+    "ws_id, date, month, hour, weekday, record_type",
+    "ws_id, date, month, hour, weekday, record_type",
+    "ws_id, date, month, hour, weekday, record_type",
+    "ws_id, date, month, hour, weekday, record_type",
+    "ws_id, date, temp, min, max, prcp, wind_speed, dewp"
+  )
+) |>
+  kbl(col.names = c("Dataset", "Rows", "Key columns")) |>
+  kable_styling(full_width = FALSE) |>
+  column_spec(1, monospace = TRUE) |>
+  column_spec(3, width = "9cm")
+```
+
+### Finding 1: hour == 0 is not midnight
+
+The first thing examined was the distribution of the `hour` column across all organisms.
+
+```{r hour-zero}
+bind_rows(
+  manta_rays     |> mutate(organism = "manta_rays"),
+  gouldian_finch |> mutate(organism = "gouldian_finch"),
+  glowworms      |> mutate(organism = "glowworms"),
+  orchids        |> mutate(organism = "orchids")
+) |>
+  group_by(organism) |>
+  summarise(
+    total_records   = n(),
+    hour_zero_n     = sum(hour == 0, na.rm = TRUE),
+    hour_zero_pct   = round(100 * mean(hour == 0, na.rm = TRUE), 1)
+  ) |>
+  kbl(col.names = c("Organism", "Total records",
+                    "hour == 0 count", "hour == 0 (%)")) |>
+  kable_styling(full_width = FALSE)
+```
+
+For manta rays, 72.5% of records have `hour == 0`. This is not genuine midnight activity. Examining the `record_type` column reveals why.
+
+```{r record-type}
+manta_rays |>
+  count(record_type) |>
+  mutate(pct = round(100 * n / sum(n), 1)) |>
+  kbl(col.names = c("Record type", "Count", "%")) |>
+  kable_styling(full_width = FALSE)
+```
+
+675 out of 953 manta ray records are `MACHINE_OBSERVATION`, likely from acoustic tags or satellite trackers attached to the animals. When a machine records a position with no exact time, it defaults to 00:00. The `hour == 0` pattern is a data artefact, not a real biological signal. Including these records in time-of-day analysis would produce a recommendation to go spotting at midnight, which is meaningless for a wildlife tourist.
+
+**Implementation decision:** all records with `hour == 0` are excluded from time-of-day scoring. The function reports how many records were excluded and flags when machine observation records are present.
+
+### Finding 2: weather coverage is uneven across organisms
+
+Not every occurrence record has a matched weather observation. The join between occurrence and weather on `ws_id` and `date` produces different coverage rates for different organisms.
+
+```{r weather-coverage}
+check_coverage <- function(occ, name) {
+  joined <- occ |>
+    left_join(weather |> select(ws_id, date, temp, prcp),
+              by = c("ws_id", "date"))
+  tibble(
+    organism       = name,
+    total          = nrow(joined),
+    has_weather    = sum(!is.na(joined$temp)),
+    pct_weather    = round(100 * mean(!is.na(joined$temp)), 1)
+  )
+}
+
+bind_rows(
+  check_coverage(manta_rays,     "manta_rays"),
+  check_coverage(gouldian_finch, "gouldian_finch"),
+  check_coverage(glowworms,      "glowworms"),
+  check_coverage(orchids,        "orchids")
+) |>
+  kbl(col.names = c("Organism", "Total records",
+                    "With weather", "Weather coverage (%)")) |>
+  kable_styling(full_width = FALSE)
+```
+
+Orchids have almost no matched weather data. Glowworms have very few. This has direct consequences for any method that requires complete weather records, such as a statistical model.
+
+### Finding 3: complete rows available for GLM differ dramatically
+
+For a Poisson GLM, every predictor must be non-missing. Checking how many complete rows survive after the weather join and filtering `hour == 0` reveals which organisms can support a model.
+
+```{r glm-coverage}
+glm_coverage <- function(occ, name) {
+  d <- occ |> filter(hour != 0)
+  joined <- merge(d,
+    weather[, intersect(c("ws_id","date","temp","prcp","wind_speed","dewp"),
+                        names(weather))],
+    by = c("ws_id", "date"), all.x = TRUE)
+  complete_n <- sum(complete.cases(
+    joined[, intersect(c("temp","prcp","wind_speed","dewp","month","hour"),
+                       names(joined))]))
+  tibble(organism = name, complete_rows = complete_n,
+         glm_viable = complete_n >= 50)
+}
+
+bind_rows(
+  glm_coverage(manta_rays,     "manta_rays"),
+  glm_coverage(gouldian_finch, "gouldian_finch"),
+  glm_coverage(glowworms,      "glowworms"),
+  glm_coverage(orchids,        "orchids")
+) |>
+  kbl(col.names = c("Organism", "Complete rows", "GLM viable (>= 50)")) |>
+  kable_styling(full_width = FALSE) |>
+  column_spec(3, bold = TRUE)
+```
+
+Only gouldian finch and manta rays have enough data for the GLM. Glowworms and orchids will correctly produce an informative error directing the user to use the scoring method instead.
+
+### Finding 4: name conflicts between datasets
+
+Both the occurrence datasets and the `weather` dataset contain columns named `month`, `weekday`, `day`, and `year`. A naive join without column selection produces `.x` and `.y` suffixes that break downstream aggregation. The fix is to select only the weather columns actually needed before joining.
+
+```{r name-conflict, eval=FALSE}
+# This would create month.x, month.y conflicts
+bad_join <- manta_rays |>
+  left_join(weather, by = c("ws_id", "date"))
+
+# This is clean
+good_join <- manta_rays |>
+  left_join(
+    weather |> select(ws_id, date, temp, prcp, wind_speed, dewp),
+    by = c("ws_id", "date")
+  )
+```
+
+---
+
+## The function
+
+Based on the data findings, the function `predict_best_sighting_times` was designed with the following decisions baked in:
+
+- Organism name is derived automatically from the R object name using `deparse(substitute())`, removing any risk of label mismatch
+- `hour == 0` records are always excluded from time-of-day analysis, with a count reported to the user
+- A machine observation tip is printed whenever `MACHINE_OBSERVATION` records are detected
+- Weather column selection before the join prevents name conflicts
+- Missing weather values are assigned a neutral score of 0.5 rather than 0, so data sparsity does not unfairly penalise some organisms
+- Two methods are supported: a weighted composite score (default, works on all organisms) and a Poisson GLM (opt-in, requires sufficient complete rows)
+
+```{r function-signature, eval=FALSE}
+predict_best_sighting_times(
+  occurrence,           # any ecotourism organism dataset
+  weather,              # the weather dataset
+  temp_range = c(15, 35), # optimal temperature range in Celsius
+  method     = "score", # "score" or "glm"
+  top_n      = 5        # number of results to return
+)
+```
+
+### Scoring method
+
+The composite score combines two normalised components:
+
+```
+composite = 0.6 x frequency_score + 0.4 x weather_score
+```
+
+Frequency gets higher weight because it is the stronger signal. Weather is a modifier. The temperature score uses a triangular decay centred on the midpoint of `temp_range`, falling to zero outside the range. The precipitation score uses exponential decay so that rain progressively reduces the score rather than acting as a binary cutoff.
+
+### GLM method
+
+The Poisson GLM is appropriate for count data because sighting counts are non-negative integers. The model formula uses all available weather predictors:
+
+```
+n_sightings ~ temp + prcp + wind_speed + dewp + month + hour
+```
+
+An early implementation that used `mean` to aggregate predictions per month and hour produced ecologically wrong results: December appeared as the best month for the Gouldian Finch, and 3am appeared as the best time for manta rays. Both were driven by a small number of high-predicted rows swamping the aggregation. The fix was to use a frequency-weighted sum: multiplying predicted values by observed sighting count before summing. This forces high-frequency periods to dominate, which is the intended behaviour.
+
+---
+
+## Results
+
+### Gouldian Finch
+
+```{r results-gf}
+predict_best_sighting_times(gouldian_finch, weather, temp_range = c(18, 30))
+```
+
+September, June, and May dominate the seasonal results, with early morning (7am, 6am) as the clear peak time. This matches the dry season birdwatching pattern for a species found in northern Australia.
+
+### Glowworms
+
+```{r results-gw}
+predict_best_sighting_times(glowworms, weather, temp_range = c(8, 18))
+```
+
+December evenings (10pm, 7pm, 8pm) dominate. Glowworms are bioluminescent and most visible at night. December is Tasmanian summer, when the species is most active. The time-of-day results are the most ecologically satisfying of all four organisms.
+
+### Manta Rays
+
+```{r results-mr}
+predict_best_sighting_times(manta_rays, weather, temp_range = c(22, 32))
+```
+
+June and July dominate, consistent with reef season on the Queensland coast. After removing the 691 hour == 0 records (72.5% of data), the time-of-day results show 11am as the peak, which is a realistic time for human boat tour sightings. The machine observation tip fires correctly.
+
+### Orchids
+
+```{r results-or}
+predict_best_sighting_times(orchids, weather)
+```
+
+September weekends at 11am. September is Australian spring and orchid blooming season. Weekend mid-morning reflects human observers out on walks. The pattern is consistent and ecologically plausible.
+
+### GLM comparison for Gouldian Finch
+
+```{r results-glm}
+predict_best_sighting_times(gouldian_finch, weather,
+                            temp_range = c(18, 30),
+                            method     = "glm")
+```
+
+The GLM results agree with the scoring method on both seasonal pattern and time of day, which provides validation that the two approaches are consistent when sufficient data is available. The predicted counts (590 for September) are somewhat higher than observed (387) because the model is extrapolating within-season variation rather than purely replicating historical counts.
+
+---
+
+## Summary of design decisions driven by data findings
+
+```{r summary-table, echo=FALSE}
+tibble::tibble(
+  Finding = c(
+    "72.5% of manta ray records have hour == 0",
+    "675 manta ray records are MACHINE_OBSERVATION",
+    "Orchids and glowworms have near-zero weather coverage",
+    "Both datasets share month, weekday, day, year column names",
+    "GLM mean aggregation produced ecologically wrong rankings",
+    "Missing weather data varies by organism"
+  ),
+  Decision = c(
+    "Always exclude hour == 0 from time-of-day analysis, report count to user",
+    "Print a tip when MACHINE_OBSERVATION records are detected",
+    "Default method is scoring, not GLM; GLM stops with informative error if too few complete rows",
+    "Select only needed weather columns before joining to prevent .x/.y conflicts",
+    "Use frequency-weighted sum (predicted x n_sightings) instead of mean for GLM aggregation",
+    "Assign neutral score 0.5 to missing weather values rather than penalising with 0"
+  )
+) |>
+  kbl(col.names = c("Data finding", "Implementation decision")) |>
+  kable_styling(full_width = TRUE) |>
+  column_spec(1, width = "7cm") |>
+  column_spec(2, width = "10cm")
+```
